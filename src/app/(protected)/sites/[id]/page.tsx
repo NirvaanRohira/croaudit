@@ -93,7 +93,7 @@ export default function SiteDetailPage() {
               .eq("page_id", page.id)
               .order("created_at", { ascending: false })
               .limit(1)
-              .single();
+              .maybeSingle();
             return { ...page, latest_audit: audit || undefined };
           })
         );

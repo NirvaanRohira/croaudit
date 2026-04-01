@@ -13,9 +13,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'URL is required' }, { status: 400 })
     }
 
-    // Validate URL
+    // Validate URL — only allow http/https, block SSRF vectors
     try {
-      new URL(url)
+      const parsed = new URL(url)
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return NextResponse.json({ error: 'Only HTTP/HTTPS URLs are allowed' }, { status: 400 })
+      }
+      // Block private/internal IPs
+      const host = parsed.hostname
+      if (host === 'localhost' || host === '127.0.0.1' || host.startsWith('10.') ||
+          host.startsWith('172.') || host.startsWith('192.168.') || host === '169.254.169.254' ||
+          host.endsWith('.internal') || host === '0.0.0.0') {
+        return NextResponse.json({ error: 'Internal URLs are not allowed' }, { status: 400 })
+      }
     } catch {
       return NextResponse.json({ error: 'Invalid URL' }, { status: 400 })
     }

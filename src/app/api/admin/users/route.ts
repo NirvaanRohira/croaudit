@@ -1,33 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient as createServerClient } from '@/lib/supabase/server'
 
-// Admin emails that can access this endpoint
-const ADMIN_EMAILS = [
-  'test-pro@croaudit.io',
-  'nirvaanrohira@gmail.com', // Add your email here
-]
+// Admin emails — move to env var in production
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || 'test-pro@croaudit.io,nirvaanrohira@gmail.com')
+  .split(',')
+  .map(e => e.trim())
 
 async function verifyAdmin(request: NextRequest) {
-  const authHeader = request.headers.get('authorization')
-
-  // Option 1: Bearer token from logged-in user
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7)
-    const supabase = createAdminClient()
-    const { data: { user } } = await supabase.auth.getUser(token)
+  // Option 1: Session-based auth (browser) — check logged-in user is admin
+  try {
+    const supabase = await createServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
     if (user && ADMIN_EMAILS.includes(user.email || '')) {
       return true
     }
+  } catch {
+    // No session
   }
 
-  // Option 2: Admin secret key (for API/curl calls)
+  // Option 2: Admin secret key (for API/curl calls only — never from browser)
   const adminKey = request.headers.get('x-admin-key')
-  if (adminKey && adminKey === process.env.ADMIN_SECRET_KEY) {
-    return true
-  }
-
-  // Option 3: Service role key (for internal calls)
-  if (authHeader === `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`) {
+  if (adminKey && process.env.ADMIN_SECRET_KEY && adminKey === process.env.ADMIN_SECRET_KEY) {
     return true
   }
 
@@ -93,7 +87,6 @@ export async function PATCH(request: NextRequest) {
 
     if (plan) {
       updates.plan = plan
-      // Auto-set limits based on plan
       if (plan === 'free') {
         updates.audits_limit = 1
         updates.subscription_status = null

@@ -29,12 +29,12 @@ export default function AdminPage() {
 
   const fetchUsers = useCallback(async () => {
     try {
-      // Use service role key for admin access
-      const res = await fetch('/api/admin/users', {
-        headers: {
-          'x-admin-key': 'croaudit-admin-2026',
-        },
-      })
+      // Session-based auth — the API checks if the logged-in user is an admin
+      const res = await fetch('/api/admin/users')
+      if (res.status === 401) {
+        setError('You are not authorized to view this page.')
+        return
+      }
       if (!res.ok) throw new Error('Failed to fetch users')
       const data = await res.json()
       setUsers(data.users)
@@ -56,10 +56,7 @@ export default function AdminPage() {
     try {
       const res = await fetch('/api/admin/users', {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': 'croaudit-admin-2026',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: userId, plan }),
       })
       if (!res.ok) throw new Error('Failed to update user')
@@ -196,18 +193,18 @@ export default function AdminPage() {
             <p className="font-medium mb-2">API Usage (curl):</p>
             <pre className="bg-gray-100 p-3 rounded text-xs overflow-x-auto">
 {`# List all users
-curl -H "x-admin-key: croaudit-admin-2026" \\
+curl -H "x-admin-key: YOUR_ADMIN_SECRET_KEY" \\
   http://localhost:3000/api/admin/users
 
 # Upgrade user to Pro by email
 curl -X PATCH -H "Content-Type: application/json" \\
-  -H "x-admin-key: croaudit-admin-2026" \\
+  -H "x-admin-key: YOUR_ADMIN_SECRET_KEY" \\
   -d '{"email":"user@example.com","plan":"pro"}' \\
   http://localhost:3000/api/admin/users
 
 # Downgrade user to Free
 curl -X PATCH -H "Content-Type: application/json" \\
-  -H "x-admin-key: croaudit-admin-2026" \\
+  -H "x-admin-key: YOUR_ADMIN_SECRET_KEY" \\
   -d '{"email":"user@example.com","plan":"free"}' \\
   http://localhost:3000/api/admin/users`}
             </pre>

@@ -48,26 +48,36 @@ export function classifyUrl(url: string): { type: string; confidence: number } {
 /**
  * Resolve a domain to its canonical base URL, following redirects.
  * e.g., gymshark.com -> https://www.gymshark.com
+ *
+ * Uses GET instead of HEAD because some servers block HEAD requests,
+ * and not all runtimes populate `res.url` for HEAD responses.
+ * We abort the body download as soon as we have the response headers.
  */
 async function resolveBaseUrl(domain: string): Promise<string> {
   const urls = [`https://${domain}`, `https://www.${domain}`]
 
   for (const url of urls) {
+    const controller = new AbortController()
     try {
       const res = await fetch(url, {
-        method: 'HEAD',
+        method: 'GET',
         redirect: 'follow',
         headers: { 'User-Agent': 'CROaudit Bot/1.0' },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(10000),
       })
+      // Abort the body download — we only need the final URL from headers
+      controller.abort()
       // Use the final URL after redirects
       const finalUrl = res.url || url
+      console.log(`[Crawler] resolveBaseUrl: ${url} -> ${finalUrl}`)
       return new URL(finalUrl).origin
-    } catch {
+    } catch (err) {
+      console.log(`[Crawler] resolveBaseUrl failed for ${url}:`, err instanceof Error ? err.message : err)
       continue
     }
   }
 
+  console.log(`[Crawler] resolveBaseUrl: falling back to https://${domain}`)
   return `https://${domain}`
 }
 

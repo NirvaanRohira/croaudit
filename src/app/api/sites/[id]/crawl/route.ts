@@ -73,10 +73,17 @@ async function crawlInBackground(
       .update({ page_count: pages.length })
       .eq('id', siteId)
   } catch (error) {
-    console.error('Background crawl error:', error)
+    const message = error instanceof Error ? error.message : String(error)
+    const stack = error instanceof Error ? error.stack : undefined
+    console.error(`[Crawl] Background crawl failed for domain="${domain}" crawlId="${crawlId}":`, message)
+    if (stack) console.error('[Crawl] Stack:', stack)
+
     await supabase
       .from('crawl_results')
-      .update({ status: 'failed' })
+      .update({ status: 'failed', error_message: message })
       .eq('id', crawlId)
+      .then(({ error: updateErr }: { error: unknown }) => {
+        if (updateErr) console.error('[Crawl] Failed to update crawl status:', updateErr)
+      })
   }
 }
