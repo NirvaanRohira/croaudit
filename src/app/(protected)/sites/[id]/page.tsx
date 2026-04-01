@@ -58,6 +58,8 @@ export default function SiteDetailPage() {
   const [newUrl, setNewUrl] = useState("");
   const [newType, setNewType] = useState("product");
   const [scanning, setScanning] = useState(false);
+  const [auditingAll, setAuditingAll] = useState(false);
+  const [auditingPage, setAuditingPage] = useState<string | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -129,15 +131,75 @@ export default function SiteDetailPage() {
   }
 
   async function handleRunAudit(pageId: string, url: string, pageType: string) {
-    const res = await fetch("/api/audit/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, page_type: pageType }),
-    });
+    setAuditingPage(pageId);
+    try {
+      const res = await fetch("/api/audit/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, page_type: pageType, page_id: pageId, site_id: siteId }),
+      });
 
-    const data = await res.json();
-    if (res.ok) {
-      router.push(`/audit/${data.audit_id}`);
+      const data = await res.json();
+      if (res.ok) {
+        router.push(`/audit/${data.audit_id}`);
+      } else {
+        alert(data.error || "Failed to start audit");
+      }
+    } catch {
+      alert("Failed to start audit");
+    } finally {
+      setAuditingPage(null);
+    }
+  }
+
+  async function handleAuditAll() {
+    const unaudited = pages.filter(
+      (p) => !p.latest_audit || p.latest_audit.status === "failed"
+    );
+    if (unaudited.length === 0) {
+      alert("All pages have already been audited.");
+      return;
+    }
+
+    setAuditingAll(true);
+
+    // Start audits for all unaudited pages (first one navigates to results)
+    const first = unaudited[0];
+    // Start the rest in background
+    for (let i = 1; i < unaudited.length; i++) {
+      const p = unaudited[i];
+      fetch("/api/audit/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: p.url,
+          page_type: p.page_type,
+          page_id: p.id,
+          site_id: siteId,
+        }),
+      }).catch(() => {});
+    }
+
+    // Navigate to the first audit
+    try {
+      const res = await fetch("/api/audit/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: first.url,
+          page_type: first.page_type,
+          page_id: first.id,
+          site_id: siteId,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        router.push(`/audit/${data.audit_id}`);
+      }
+    } catch {
+      alert("Failed to start audits");
+    } finally {
+      setAuditingAll(false);
     }
   }
 
@@ -190,9 +252,16 @@ export default function SiteDetailPage() {
               {site?.domain}
             </p>
           </div>
-          <Button onClick={handleScanSite} variant="outline" disabled={scanning}>
-            {scanning ? "Scanning..." : "Scan entire site"}
-          </Button>
+          <div className="flex gap-2">
+            {pages.length > 0 && (
+              <Button onClick={handleAuditAll} disabled={auditingAll}>
+                {auditingAll ? "Starting audits..." : `Audit all (${pages.filter(p => !p.latest_audit || p.latest_audit.status === "failed").length})`}
+              </Button>
+            )}
+            <Button onClick={handleScanSite} variant="outline" disabled={scanning}>
+              {scanning ? "Scanning..." : "Scan entire site"}
+            </Button>
+          </div>
         </div>
 
         {/* Add page */}
@@ -290,11 +359,12 @@ export default function SiteDetailPage() {
                       <Button
                         variant="outline"
                         size="sm"
+                        disabled={auditingPage === page.id}
                         onClick={() =>
                           handleRunAudit(page.id, page.url, page.page_type)
                         }
                       >
-                        Audit
+                        {auditingPage === page.id ? "Starting..." : "Audit"}
                       </Button>
                     </div>
                   </TableCell>

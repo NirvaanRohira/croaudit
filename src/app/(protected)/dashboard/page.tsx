@@ -139,8 +139,8 @@ export default function DashboardPage() {
             </p>
           </div>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-            <DialogTrigger>
-              <Button>Add site</Button>
+            <DialogTrigger className="inline-flex shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90">
+              Add site
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -14,14 +14,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
 
 interface DiscoveredPage {
   url: string;
   suggested_type: string;
   confidence: number;
-  selected?: boolean;
-  override_type?: string;
+  selected: boolean;
+  override_type: string;
 }
 
 const PAGE_TYPES = [
@@ -35,6 +34,8 @@ const PAGE_TYPES = [
   "general",
 ];
 
+const PAGES_PER_GROUP = 10;
+
 export default function ScanPage() {
   const params = useParams();
   const siteId = params.id as string;
@@ -44,6 +45,7 @@ export default function ScanPage() {
   const [crawlStatus, setCrawlStatus] = useState<string>("crawling");
   const [pages, setPages] = useState<DiscoveredPage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, number>>({});
 
   const pollCrawl = useCallback(async () => {
     const { data: crawls } = await supabase
@@ -58,10 +60,15 @@ export default function ScanPage() {
       setCrawlStatus(crawl.status);
 
       if (crawl.status === "complete") {
-        const discovered = (
-          crawl.discovered_pages as unknown as DiscoveredPage[]
-        ).map((p) => ({
-          ...p,
+        const raw = crawl.discovered_pages as unknown as {
+          url: string;
+          suggested_type: string;
+          confidence: number;
+        }[];
+        const discovered: DiscoveredPage[] = raw.map((p) => ({
+          url: p.url,
+          suggested_type: p.suggested_type,
+          confidence: p.confidence,
           selected: true,
           override_type: p.suggested_type,
         }));
@@ -95,43 +102,82 @@ export default function ScanPage() {
     return () => clearInterval(interval);
   }, [pollCrawl]);
 
+  // Group pages by their current type
+  const grouped = useMemo(() => {
+    const groups: Record<string, { page: DiscoveredPage; index: number }[]> = {};
+    pages.forEach((page, index) => {
+      const type = page.override_type || page.suggested_type;
+      if (!groups[type]) groups[type] = [];
+      groups[type].push({ page, index });
+    });
+    return groups;
+  }, [pages]);
+
+  const selectedCount = useMemo(
+    () => pages.filter((p) => p.selected).length,
+    [pages]
+  );
+
   function togglePage(index: number) {
-    setPages((prev) =>
-      prev.map((p, i) => (i === index ? { ...p, selected: !p.selected } : p))
-    );
+    setPages((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], selected: !next[index].selected };
+      return next;
+    });
   }
 
   function changeType(index: number, type: string) {
+    setPages((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], override_type: type };
+      return next;
+    });
+  }
+
+  function selectAll() {
+    setPages((prev) => prev.map((p) => ({ ...p, selected: true })));
+  }
+
+  function deselectAll() {
+    setPages((prev) => prev.map((p) => ({ ...p, selected: false })));
+  }
+
+  function toggleGroup(type: string, selected: boolean) {
     setPages((prev) =>
-      prev.map((p, i) => (i === index ? { ...p, override_type: type } : p))
+      prev.map((p) => {
+        const currentType = p.override_type || p.suggested_type;
+        if (currentType === type) return { ...p, selected };
+        return p;
+      })
     );
+  }
+
+  function showMore(type: string) {
+    setExpandedGroups((prev) => ({
+      ...prev,
+      [type]: (prev[type] || PAGES_PER_GROUP) + PAGES_PER_GROUP,
+    }));
   }
 
   async function handleAuditAll() {
     const selected = pages.filter((p) => p.selected);
+    if (selected.length === 0) return;
 
-    // Create pages in DB
-    for (const page of selected) {
-      await supabase.from("pages").insert({
-        site_id: siteId,
-        url: page.url,
-        page_type: page.override_type || page.suggested_type,
-        classification_confidence: page.confidence,
-      });
+    // Batch insert (max 50 at a time to avoid timeout)
+    const batchSize = 50;
+    for (let i = 0; i < selected.length; i += batchSize) {
+      const batch = selected.slice(i, i + batchSize);
+      await supabase.from("pages").insert(
+        batch.map((page) => ({
+          site_id: siteId,
+          url: page.url,
+          page_type: page.override_type || page.suggested_type,
+          classification_confidence: page.confidence,
+        }))
+      );
     }
 
-    // Navigate back to site
     router.push(`/sites/${siteId}`);
-  }
-
-  const selectedCount = pages.filter((p) => p.selected).length;
-
-  // Group by type
-  const grouped: Record<string, DiscoveredPage[]> = {};
-  for (const page of pages) {
-    const type = page.override_type || page.suggested_type;
-    if (!grouped[type]) grouped[type] = [];
-    grouped[type].push(page);
   }
 
   if (crawlStatus === "crawling" || loading) {
@@ -143,19 +189,16 @@ export default function ScanPage() {
           </a>
         </nav>
         <div className="max-w-3xl mx-auto px-6 py-24 text-center space-y-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-full border-4 border-muted">
-            <svg className="animate-spin h-6 w-6" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
+          <div className="flex items-center justify-center">
+            <div className="w-12 h-12 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
           </div>
           <h1 className="text-xl font-bold">Scanning site...</h1>
           <p className="text-muted-foreground">
-            Checking sitemap, robots.txt, and homepage links.
+            Checking sitemap, robots.txt, and homepage links. This may take a moment for large sites.
           </p>
-          <div className="max-w-md mx-auto space-y-2">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
+          <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            Crawling in progress
           </div>
         </div>
       </div>
@@ -183,12 +226,16 @@ export default function ScanPage() {
         <a href="/" className="font-mono text-sm font-bold tracking-tight">
           CRO<span className="text-muted-foreground">audit</span>
         </a>
-        <a href={`/sites/${siteId}`} className="text-sm text-muted-foreground hover:text-foreground">
+        <a
+          href={`/sites/${siteId}`}
+          className="text-sm text-muted-foreground hover:text-foreground"
+        >
           Back to site
         </a>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-6 py-12 space-y-8">
+      <div className="max-w-4xl mx-auto px-6 py-12 space-y-6">
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold">
@@ -196,6 +243,11 @@ export default function ScanPage() {
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
               {selectedCount} selected for audit
+              {pages.length >= 500 && (
+                <span className="ml-2 text-yellow-600">
+                  (capped at 500 — large site)
+                </span>
+              )}
             </p>
           </div>
           <Button onClick={handleAuditAll} disabled={selectedCount === 0}>
@@ -203,57 +255,103 @@ export default function ScanPage() {
           </Button>
         </div>
 
-        {Object.entries(grouped).map(([type, typePages]) => (
-          <Card key={type}>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <CardTitle className="text-base capitalize">
-                  {type.replace("_", " ")}
-                </CardTitle>
-                <Badge variant="secondary" className="text-xs">
-                  {typePages.length}
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {typePages.map((page) => {
-                const pageIndex = pages.indexOf(page);
-                return (
-                  <div
-                    key={page.url}
-                    className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0"
-                  >
-                    <Checkbox
-                      checked={page.selected}
-                      onCheckedChange={() => togglePage(pageIndex)}
-                    />
-                    <span className="flex-1 font-mono text-sm truncate">
-                      {page.url}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {Math.round(page.confidence * 100)}%
-                    </span>
-                    <Select
-                      value={page.override_type || page.suggested_type}
-                      onValueChange={(v) => { if (v) changeType(pageIndex, v) }}
-                    >
-                      <SelectTrigger className="w-28 h-8 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {PAGE_TYPES.map((t) => (
-                          <SelectItem key={t} value={t} className="text-xs">
-                            {t.replace("_", " ")}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+        {/* Bulk actions */}
+        <div className="flex items-center gap-3 text-sm">
+          <Button variant="outline" size="sm" onClick={selectAll}>
+            Select all
+          </Button>
+          <Button variant="outline" size="sm" onClick={deselectAll}>
+            Deselect all
+          </Button>
+          <span className="text-muted-foreground">
+            {selectedCount} / {pages.length} selected
+          </span>
+        </div>
+
+        {/* Grouped pages */}
+        {Object.entries(grouped)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([type, typePages]) => {
+            const visibleCount = expandedGroups[type] || PAGES_PER_GROUP;
+            const visiblePages = typePages.slice(0, visibleCount);
+            const hasMore = typePages.length > visibleCount;
+            const groupSelected = typePages.filter((tp) => tp.page.selected).length;
+            const allSelected = groupSelected === typePages.length;
+
+            return (
+              <Card key={type}>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <Checkbox
+                        checked={allSelected}
+                        onCheckedChange={(checked) =>
+                          toggleGroup(type, !!checked)
+                        }
+                      />
+                      <CardTitle className="text-base capitalize">
+                        {type.replace("_", " ")}
+                      </CardTitle>
+                      <Badge variant="secondary" className="text-xs">
+                        {typePages.length}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        ({groupSelected} selected)
+                      </span>
+                    </div>
                   </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-        ))}
+                </CardHeader>
+                <CardContent className="space-y-1">
+                  {visiblePages.map(({ page, index }) => (
+                    <div
+                      key={page.url}
+                      className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0"
+                    >
+                      <Checkbox
+                        checked={page.selected}
+                        onCheckedChange={() => togglePage(index)}
+                      />
+                      <span
+                        className="flex-1 font-mono text-sm truncate"
+                        title={page.url}
+                      >
+                        {page.url}
+                      </span>
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">
+                        {Math.round(page.confidence * 100)}%
+                      </span>
+                      <Select
+                        value={page.override_type}
+                        onValueChange={(v) => {
+                          if (v) changeType(index, v);
+                        }}
+                      >
+                        <SelectTrigger className="w-28 h-8 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PAGE_TYPES.map((t) => (
+                            <SelectItem key={t} value={t} className="text-xs">
+                              {t.replace("_", " ")}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+
+                  {hasMore && (
+                    <button
+                      onClick={() => showMore(type)}
+                      className="w-full py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Show more ({typePages.length - visibleCount} remaining)
+                    </button>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
       </div>
     </div>
   );

@@ -334,7 +334,11 @@ function computeScore(results: AuditResultItem[]) {
   const fail_count = results.filter(r => r.status === 'FAIL').length
   const unable_count = results.filter(r => r.status === 'UNABLE TO VERIFY').length
   const total_items = results.length
-  const score = total_items > 0 ? Math.round((pass_count / total_items) * 100) : 0
+
+  // Score = pass / (pass + fail), excluding "UNABLE TO VERIFY"
+  // This matches how most audit tools score — unverifiable items don't penalize
+  const verifiable = pass_count + fail_count
+  const score = verifiable > 0 ? Math.round((pass_count / verifiable) * 100) : 0
 
   // Quick wins: top 5 failures sorted by impact (highest first)
   const quick_wins = results

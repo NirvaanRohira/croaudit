@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
+import { createClient } from "@/lib/supabase/client";
 
 interface AuditStatus {
   id: string;
@@ -108,6 +109,31 @@ export default function AuditReportPage() {
   const [status, setStatus] = useState<AuditStatus | null>(null);
   const [report, setReport] = useState<AuditReport | null>(null);
   const [error, setError] = useState("");
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isPaidUser, setIsPaidUser] = useState(false);
+
+  // Check auth and profile
+  useEffect(() => {
+    async function checkUser() {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      setIsLoggedIn(true);
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("plan, subscription_status")
+        .eq("id", user.id)
+        .single();
+      if (
+        profile &&
+        (profile.plan === "pro" || profile.plan === "agency") &&
+        profile.subscription_status === "active"
+      ) {
+        setIsPaidUser(true);
+      }
+    }
+    checkUser();
+  }, []);
 
   const pollStatus = useCallback(async () => {
     try {
@@ -175,26 +201,8 @@ export default function AuditReportPage() {
         </nav>
         <div className="max-w-2xl mx-auto px-6 py-24 text-center space-y-8">
           <div className="space-y-4">
-            <div className="inline-flex items-center justify-center w-20 h-20 rounded-full border-4 border-muted">
-              <svg
-                className="animate-spin h-8 w-8 text-muted-foreground"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                />
-              </svg>
+            <div className="inline-flex items-center justify-center">
+              <div className="w-16 h-16 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
             </div>
             <h1 className="text-2xl font-bold">Auditing your page...</h1>
             <p className="text-muted-foreground">
@@ -267,9 +275,15 @@ export default function AuditReportPage() {
           CRO<span className="text-muted-foreground">audit</span>
         </a>
         <div className="flex items-center gap-3">
-          <a href="/signup">
-            <Button size="sm">Sign up to unlock full report</Button>
-          </a>
+          {isLoggedIn ? (
+            <a href="/dashboard">
+              <Button size="sm" variant="outline">Dashboard</Button>
+            </a>
+          ) : (
+            <a href="/signup">
+              <Button size="sm">Sign up to unlock full report</Button>
+            </a>
+          )}
         </div>
       </nav>
 
@@ -377,61 +391,123 @@ export default function AuditReportPage() {
 
         <Separator />
 
-        {/* Full results - BLURRED for free users */}
-        <div className="relative">
-          <div className="blur-sm pointer-events-none select-none">
+        {/* Full results - shown fully for paid users, blurred for free */}
+        {isPaidUser ? (
+          <div>
             <h2 className="text-lg font-bold mb-6">Full Audit Results</h2>
-            {Object.entries(groupedResults)
-              .slice(0, 3)
-              .map(([section, items]) => (
-                <div key={section} className="mb-8">
-                  <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-                    {section}
-                  </h3>
-                  {items.slice(0, 5).map((item, i) => (
-                    <div
-                      key={i}
-                      className="flex items-start gap-3 py-2 border-b border-border/30"
-                    >
-                      <StatusBadge status={item.status} />
-                      <div className="flex-1">
-                        <p className="text-sm">{item.item}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {item.explanation}
-                        </p>
-                      </div>
-                      <ImpactDots impact={item.impact} />
+            {Object.entries(groupedResults).map(([section, items]) => (
+              <div key={section} className="mb-8">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+                  {section}
+                </h3>
+                {items.map((item, i) => (
+                  <div
+                    key={i}
+                    className="flex items-start gap-3 py-2 border-b border-border/30"
+                  >
+                    <StatusBadge status={item.status} />
+                    <div className="flex-1">
+                      <p className="text-sm">{item.item}</p>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {item.explanation}
+                      </p>
                     </div>
-                  ))}
-                </div>
-              ))}
-          </div>
+                    <ImpactDots impact={item.impact} />
+                  </div>
+                ))}
+              </div>
+            ))}
 
-          {/* Upgrade CTA overlay */}
-          <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-background/0 via-background/80 to-background">
-            <div className="text-center space-y-4 p-8">
-              <h3 className="text-xl font-bold">
-                Unlock the full report
-              </h3>
-              <p className="text-muted-foreground max-w-sm">
-                Sign up to see all {report.total_items} audit results with detailed
-                explanations, plus AI-powered fix suggestions.
-              </p>
-              <div className="flex gap-3 justify-center">
-                <a href="/signup">
-                  <Button size="lg">
-                    Sign up free
-                  </Button>
-                </a>
-                <a href="/pricing">
-                  <Button size="lg" variant="outline">
-                    View plans
-                  </Button>
-                </a>
+            {/* Optimization suggestions for paid users */}
+            {report.suggestions && report.suggestions.length > 0 && (
+              <Card className="mt-8">
+                <CardHeader>
+                  <CardTitle className="text-base">
+                    AI Optimization Suggestions
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Personalized recommendations to improve your conversion rate
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {report.suggestions.map((suggestion: unknown, i: number) => {
+                    const s = suggestion as Record<string, unknown>;
+                    return (
+                      <div
+                        key={i}
+                        className="py-3 border-b border-border/50 last:border-0"
+                      >
+                        <p className="text-sm font-medium">
+                          {(s.title as string) || (s.suggestion as string) || String(suggestion)}
+                        </p>
+                        {s.description ? (
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {String(s.description)}
+                          </p>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        ) : (
+          <div className="relative">
+            <div className="blur-sm pointer-events-none select-none">
+              <h2 className="text-lg font-bold mb-6">Full Audit Results</h2>
+              {Object.entries(groupedResults)
+                .slice(0, 3)
+                .map(([section, items]) => (
+                  <div key={section} className="mb-8">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+                      {section}
+                    </h3>
+                    {items.slice(0, 5).map((item, i) => (
+                      <div
+                        key={i}
+                        className="flex items-start gap-3 py-2 border-b border-border/30"
+                      >
+                        <StatusBadge status={item.status} />
+                        <div className="flex-1">
+                          <p className="text-sm">{item.item}</p>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            {item.explanation}
+                          </p>
+                        </div>
+                        <ImpactDots impact={item.impact} />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+            </div>
+
+            {/* Upgrade CTA overlay */}
+            <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-background/0 via-background/80 to-background">
+              <div className="text-center space-y-4 p-8">
+                <h3 className="text-xl font-bold">
+                  Unlock the full report
+                </h3>
+                <p className="text-muted-foreground max-w-sm">
+                  Sign up to see all {report.total_items} audit results with detailed
+                  explanations, plus AI-powered fix suggestions.
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <a href="/signup">
+                    <Button size="lg">
+                      Sign up free
+                    </Button>
+                  </a>
+                  <a href="/pricing">
+                    <Button size="lg" variant="outline">
+                      View plans
+                    </Button>
+                  </a>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );

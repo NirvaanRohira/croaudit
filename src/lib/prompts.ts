@@ -29,19 +29,23 @@ export function buildAuditPrompt(
     }
   }
 
-  // PageSpeed context
+  // PageSpeed context — use actual PageSpeedResult fields
   let pagespeedContext = '';
-  if (pagespeed.pagespeed_available) {
+  if (pagespeed.performance_score != null || pagespeed.accessibility_score != null) {
     const cwv = pagespeed.core_web_vitals || {};
-    const mob = pagespeed.mobile_details || {};
+    const fcp = cwv.fcp != null ? (cwv.fcp / 1000).toFixed(1) + 's' : 'N/A';
+    const lcp = cwv.lcp != null ? (cwv.lcp / 1000).toFixed(1) + 's' : 'N/A';
+    const tbt = cwv.tbt != null ? Math.round(cwv.tbt) + 'ms' : 'N/A';
+    const cls = cwv.cls != null ? cwv.cls.toFixed(3) : 'N/A';
     pagespeedContext = '\n\n## REAL PERFORMANCE DATA (Google PageSpeed Insights - Mobile):\n' +
-      '- Performance Score: ' + pagespeed.performance_score + '/100\n' +
-      '- Accessibility Score: ' + pagespeed.accessibility_score + '/100\n' +
-      '- Mobile Viewport: ' + (pagespeed.mobile_friendly ? 'YES' : 'NO') + '\n' +
-      '- FCP: ' + (cwv.fcp || 'N/A') + ' | LCP: ' + (cwv.lcp || 'N/A') + '\n' +
-      '- TBT: ' + (cwv.tbt || 'N/A') + ' | CLS: ' + (cwv.cls || 'N/A') + '\n' +
-      '- Tap Targets OK: ' + (mob.tap_targets_ok ? 'YES' : 'NO') + '\n\n' +
-      'Use this data to PASS or FAIL speed/mobile items definitively.';
+      '- Performance Score: ' + (pagespeed.performance_score ?? 'N/A') + '/100\n' +
+      '- Accessibility Score: ' + (pagespeed.accessibility_score ?? 'N/A') + '/100\n' +
+      '- Mobile Friendly: ' + (pagespeed.mobile_friendly ? 'YES' : 'NO') + '\n' +
+      '- First Contentful Paint (FCP): ' + fcp + '\n' +
+      '- Largest Contentful Paint (LCP): ' + lcp + '\n' +
+      '- Total Blocking Time (TBT): ' + tbt + '\n' +
+      '- Cumulative Layout Shift (CLS): ' + cls + '\n\n' +
+      'Use this data to PASS or FAIL speed/mobile/accessibility items definitively. Do NOT mark these as UNABLE TO VERIFY when data is provided.';
   }
 
   const contextType =
