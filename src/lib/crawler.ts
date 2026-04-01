@@ -34,7 +34,7 @@ export function classifyUrl(url: string): { type: string; confidence: number } {
     return { type: 'thank_you', confidence: 0.90 }
 
   // Product & category
-  if (path.includes('/product')) return { type: 'product', confidence: 0.95 }
+  if (path.match(/\/products?\//)) return { type: 'product', confidence: 0.95 }
   if (path.includes('/collection') || path.includes('/category') || path.includes('/categor'))
     return { type: 'category', confidence: 0.93 }
 
@@ -46,35 +46,85 @@ export function classifyUrl(url: string): { type: string; confidence: number } {
 }
 
 /**
+ * Resolve a domain to its canonical base URL, following redirects.
+ * e.g., gymshark.com -> https://www.gymshark.com
+ */
+async function resolveBaseUrl(domain: string): Promise<string> {
+  const urls = [`https://${domain}`, `https://www.${domain}`]
+
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, {
+        method: 'HEAD',
+        redirect: 'follow',
+        headers: { 'User-Agent': 'CROaudit Bot/1.0' },
+        signal: AbortSignal.timeout(8000),
+      })
+      // Use the final URL after redirects
+      const finalUrl = res.url || url
+      return new URL(finalUrl).origin
+    } catch {
+      continue
+    }
+  }
+
+  return `https://${domain}`
+}
+
+/**
  * Crawl a domain to discover pages.
  * Strategy: sitemap.xml -> robots.txt -> homepage link extraction
  * Caps at MAX_PAGES to prevent overwhelming the UI.
  */
 export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
-  const baseUrl = `https://${domain}`
+  console.log(`[Crawler] Starting crawl for domain: ${domain}`)
+
+  // Resolve the actual base URL (handles redirects like gymshark.com -> www.gymshark.com)
+  const baseUrl = await resolveBaseUrl(domain)
+  const resolvedDomain = new URL(baseUrl).hostname
+  console.log(`[Crawler] Resolved base URL: ${baseUrl} (domain: ${resolvedDomain})`)
+
   const discovered = new Map<string, DiscoveredPage>()
 
   // Strategy 1: Try sitemap.xml
   try {
+    console.log(`[Crawler] Trying sitemap: ${baseUrl}/sitemap.xml`)
     const sitemapUrls = await fetchSitemap(`${baseUrl}/sitemap.xml`, MAX_PAGES)
+    console.log(`[Crawler] Sitemap returned ${sitemapUrls.length} URLs`)
+
+    // Filter to only same-domain URLs (skip international/localized versions)
     for (const url of sitemapUrls) {
       if (discovered.size >= MAX_PAGES) break
-      if (!discovered.has(url)) {
-        const { type, confidence } = classifyUrl(url)
-        discovered.set(url, { url, suggested_type: type, confidence })
+      try {
+        const urlHost = new URL(url).hostname
+        // Only include URLs from the same domain (skip es-US, fr, etc. subpaths if different host)
+        if (urlHost === resolvedDomain || urlHost === domain || urlHost === `www.${domain}`) {
+          if (!discovered.has(url)) {
+            const { type, confidence } = classifyUrl(url)
+            discovered.set(url, { url, suggested_type: type, confidence })
+          }
+        }
+      } catch {
+        // Invalid URL, skip
       }
     }
-  } catch {
-    // No sitemap, try robots.txt
+    console.log(`[Crawler] After filtering: ${discovered.size} pages`)
+  } catch (err) {
+    console.log(`[Crawler] Sitemap failed:`, err)
   }
 
   // Strategy 2: Check robots.txt for Sitemap directives
   if (discovered.size === 0) {
     try {
-      const robotsRes = await fetch(`${baseUrl}/robots.txt`)
+      console.log(`[Crawler] Trying robots.txt: ${baseUrl}/robots.txt`)
+      const robotsRes = await fetch(`${baseUrl}/robots.txt`, {
+        headers: { 'User-Agent': 'CROaudit Bot/1.0' },
+        signal: AbortSignal.timeout(8000),
+      })
       if (robotsRes.ok) {
         const robotsTxt = await robotsRes.text()
         const sitemapMatches = robotsTxt.match(/Sitemap:\s*(.+)/gi)
+        console.log(`[Crawler] Found ${sitemapMatches?.length || 0} sitemap directives in robots.txt`)
         if (sitemapMatches) {
           for (const match of sitemapMatches) {
             if (discovered.size >= MAX_PAGES) break
@@ -102,12 +152,16 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   // Strategy 3: Crawl homepage for internal links
   if (discovered.size === 0) {
     try {
+      console.log(`[Crawler] Trying homepage link extraction: ${baseUrl}`)
       const homeRes = await fetch(baseUrl, {
         headers: { 'User-Agent': 'CROaudit Bot/1.0' },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
       })
       if (homeRes.ok) {
         const html = await homeRes.text()
-        const links = extractInternalLinks(html, domain)
+        const links = extractInternalLinks(html, resolvedDomain)
+        console.log(`[Crawler] Found ${links.length} internal links on homepage`)
         for (const url of links) {
           if (discovered.size >= MAX_PAGES) break
           if (!discovered.has(url)) {
@@ -122,7 +176,9 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   }
 
   // Always include the homepage
-  if (!discovered.has(baseUrl) && !discovered.has(`${baseUrl}/`)) {
+  const homeUrls = [baseUrl, `${baseUrl}/`]
+  const hasHome = homeUrls.some(u => discovered.has(u))
+  if (!hasHome) {
     discovered.set(baseUrl, {
       url: baseUrl,
       suggested_type: 'home',
@@ -131,7 +187,7 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   }
 
   // Filter out non-page URLs
-  return Array.from(discovered.values()).filter((page) => {
+  const results = Array.from(discovered.values()).filter((page) => {
     const url = page.url.toLowerCase()
     // Skip assets, API endpoints, etc.
     if (url.match(/\.(css|js|png|jpg|jpeg|gif|svg|webp|ico|woff|woff2|ttf|eot|pdf|zip|xml|json)$/)) return false
@@ -139,14 +195,19 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
     if (url.includes('/cdn-cgi/') || url.includes('/_next/')) return false
     return true
   })
+
+  console.log(`[Crawler] Final result: ${results.length} pages`)
+  return results
 }
 
 async function fetchSitemap(url: string, maxUrls: number): Promise<string[]> {
+  console.log(`[Crawler] Fetching sitemap: ${url} (max: ${maxUrls})`)
   const response = await fetch(url, {
     headers: { 'User-Agent': 'CROaudit Bot/1.0' },
-    signal: AbortSignal.timeout(10000), // 10 second timeout per sitemap
+    redirect: 'follow',
+    signal: AbortSignal.timeout(15000), // 15 second timeout per sitemap
   })
-  if (!response.ok) throw new Error('Sitemap not found')
+  if (!response.ok) throw new Error(`Sitemap ${url} returned ${response.status}`)
 
   const xml = await response.text()
   const urls: string[] = []
@@ -157,8 +218,15 @@ async function fetchSitemap(url: string, maxUrls: number): Promise<string[]> {
     if (urls.length >= maxUrls) break
     const loc = match[1].trim()
 
-    // If it's a sitemap index, recursively fetch
+    // If it's a sitemap index entry, recursively fetch (but only for same-language/primary sitemaps)
     if (loc.endsWith('.xml') || loc.includes('sitemap')) {
+      // Skip international/hreflang sitemaps to avoid bloat
+      const locPath = new URL(loc).pathname.toLowerCase()
+      if (locPath.includes('hreflang') || locPath.match(/\/(es|fr|de|it|pt|ja|ko|zh|ar|nl|sv|da|nb|fi|pl|cs|hu|ro|bg|hr|sk|sl|et|lt|lv|el|tr|he|th|vi|id|ms|tl)-/)) {
+        console.log(`[Crawler] Skipping international sitemap: ${loc}`)
+        continue
+      }
+
       try {
         const remaining = maxUrls - urls.length
         if (remaining <= 0) break
@@ -172,6 +240,7 @@ async function fetchSitemap(url: string, maxUrls: number): Promise<string[]> {
     }
   }
 
+  console.log(`[Crawler] Sitemap ${url} yielded ${urls.length} URLs`)
   return urls.slice(0, maxUrls)
 }
 
@@ -195,7 +264,7 @@ function extractInternalLinks(html: string, domain: string): string[] {
     // Only include same-domain links
     try {
       const url = new URL(href)
-      if (url.hostname === domain || url.hostname === `www.${domain}`) {
+      if (url.hostname === domain || url.hostname === `www.${domain}` || url.hostname === domain.replace('www.', '')) {
         links.push(url.origin + url.pathname)
       }
     } catch {
