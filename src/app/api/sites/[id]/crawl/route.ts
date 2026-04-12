@@ -1,24 +1,42 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient } from '@/lib/supabase/server'
 import { crawlDomain } from '@/lib/crawler'
+import { rateLimit } from '@/lib/rate-limit'
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    // Rate limiting: 5 per hour per IP
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    const { allowed } = rateLimit(`crawl:${ip}`, 5, 60 * 60 * 1000)
+    if (!allowed) {
+      return NextResponse.json({ error: 'Rate limit exceeded. Try again later.' }, { status: 429 })
+    }
+
+    // Auth: verify user is logged in
+    const serverSupabase = await createClient()
+    const { data: { user } } = await serverSupabase.auth.getUser()
+
+    if (!user) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 })
+    }
+
     const { id: siteId } = await params
     const supabase = createAdminClient()
 
-    // Get the site
+    // Verify user owns the site
     const { data: site, error: siteError } = await supabase
       .from('sites')
       .select('*')
       .eq('id', siteId)
+      .eq('user_id', user.id)
       .single()
 
     if (siteError || !site) {
-      return NextResponse.json({ error: 'Site not found' }, { status: 404 })
+      return NextResponse.json({ error: 'Site not found or access denied' }, { status: 403 })
     }
 
     // Create crawl record

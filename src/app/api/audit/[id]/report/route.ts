@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { createClient } from '@/lib/supabase/server'
 import { ANON_AUDIT_RESULTS } from '../../run/route'
 
 export async function GET(
@@ -8,23 +8,8 @@ export async function GET(
 ) {
   try {
     const { id } = await params
-    const supabase = createAdminClient()
 
-    // Check DB first
-    const { data: audit, error } = await supabase
-      .from('audits')
-      .select(`
-        *,
-        pages:page_id (url, page_type)
-      `)
-      .eq('id', id)
-      .single()
-
-    if (audit) {
-      return NextResponse.json(audit)
-    }
-
-    // Check anonymous in-memory store
+    // Check anonymous in-memory store first — these are free landing page audits
     const anon = ANON_AUDIT_RESULTS.get(id)
     if (anon && anon.result) {
       return NextResponse.json({
@@ -35,11 +20,22 @@ export async function GET(
       })
     }
 
-    if (error) {
+    // Check DB — RLS enforces auth.uid() = user_id automatically
+    const supabase = await createClient()
+    const { data: audit, error } = await supabase
+      .from('audits')
+      .select(`
+        *,
+        pages:page_id (url, page_type)
+      `)
+      .eq('id', id)
+      .maybeSingle()
+
+    if (!audit || error) {
       return NextResponse.json({ error: 'Audit not found' }, { status: 404 })
     }
 
-    return NextResponse.json({ error: 'Audit not found' }, { status: 404 })
+    return NextResponse.json(audit)
   } catch (error) {
     console.error('Report fetch error:', error)
     return NextResponse.json(

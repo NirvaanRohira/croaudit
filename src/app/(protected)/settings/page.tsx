@@ -87,8 +87,8 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen bg-background">
       <nav className="flex items-center justify-between px-6 py-4 border-b border-border/50">
-        <a href="/" className="font-mono text-sm font-bold tracking-tight">
-          CRO<span className="text-muted-foreground">audit</span>
+        <a href="/dashboard" className="font-mono text-sm font-bold tracking-tight">
+          CRO<span className="text-gradient-cro">audit</span>
         </a>
         <a
           href="/dashboard"

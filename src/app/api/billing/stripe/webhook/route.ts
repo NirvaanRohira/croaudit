@@ -3,6 +3,11 @@ import { stripe, PLANS } from '@/lib/stripe'
 import { createAdminClient } from '@/lib/supabase/admin'
 
 export async function POST(request: NextRequest) {
+  if (!process.env.STRIPE_WEBHOOK_SECRET) {
+    console.error('STRIPE_WEBHOOK_SECRET is not configured')
+    return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 })
+  }
+
   const body = await request.text()
   const sig = request.headers.get('stripe-signature')
 

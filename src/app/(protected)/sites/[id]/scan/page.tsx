@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
@@ -13,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface DiscoveredPage {
   url: string;
@@ -34,7 +33,7 @@ const PAGE_TYPES = [
   "general",
 ];
 
-const PAGES_PER_GROUP = 10;
+const VISIBLE_PER_PAGE = 50;
 
 export default function ScanPage() {
   const params = useParams();
@@ -45,7 +44,11 @@ export default function ScanPage() {
   const [crawlStatus, setCrawlStatus] = useState<string>("crawling");
   const [pages, setPages] = useState<DiscoveredPage[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedGroups, setExpandedGroups] = useState<Record<string, number>>({});
+
+  // Filters
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [visibleCount, setVisibleCount] = useState(VISIBLE_PER_PAGE);
 
   const pollCrawl = useCallback(async () => {
     const { data: crawls } = await supabase
@@ -102,21 +105,45 @@ export default function ScanPage() {
     return () => clearInterval(interval);
   }, [pollCrawl]);
 
-  // Group pages by their current type
-  const grouped = useMemo(() => {
-    const groups: Record<string, { page: DiscoveredPage; index: number }[]> = {};
-    pages.forEach((page, index) => {
-      const type = page.override_type || page.suggested_type;
-      if (!groups[type]) groups[type] = [];
-      groups[type].push({ page, index });
+  // Stats per type
+  const typeStats = useMemo(() => {
+    const stats: Record<string, { total: number; selected: number }> = {};
+    pages.forEach((p) => {
+      const type = p.override_type || p.suggested_type;
+      if (!stats[type]) stats[type] = { total: 0, selected: 0 };
+      stats[type].total++;
+      if (p.selected) stats[type].selected++;
     });
-    return groups;
+    return stats;
   }, [pages]);
 
-  const selectedCount = useMemo(
-    () => pages.filter((p) => p.selected).length,
-    [pages]
-  );
+  // Filtered pages
+  const filtered = useMemo(() => {
+    let result = pages;
+    if (typeFilter !== "all") {
+      result = result.filter(
+        (p) => (p.override_type || p.suggested_type) === typeFilter
+      );
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter((p) => p.url.toLowerCase().includes(q));
+    }
+    return result;
+  }, [pages, typeFilter, search]);
+
+  // Map filtered pages back to their original indices
+  const filteredWithIndex = useMemo(() => {
+    const indexMap = new Map<DiscoveredPage, number>();
+    pages.forEach((p, i) => indexMap.set(p, i));
+    return filtered.map((p) => ({ page: p, index: indexMap.get(p)! }));
+  }, [filtered, pages]);
+
+  const visiblePages = filteredWithIndex.slice(0, visibleCount);
+  const hasMore = filteredWithIndex.length > visibleCount;
+
+  const selectedCount = pages.filter((p) => p.selected).length;
+  const filteredSelectedCount = filtered.filter((p) => p.selected).length;
 
   function togglePage(index: number) {
     setPages((prev) => {
@@ -134,36 +161,33 @@ export default function ScanPage() {
     });
   }
 
-  function selectAll() {
-    setPages((prev) => prev.map((p) => ({ ...p, selected: true })));
-  }
-
-  function deselectAll() {
-    setPages((prev) => prev.map((p) => ({ ...p, selected: false })));
-  }
-
-  function toggleGroup(type: string, selected: boolean) {
+  function selectFiltered() {
+    const filteredSet = new Set(filtered);
     setPages((prev) =>
-      prev.map((p) => {
-        const currentType = p.override_type || p.suggested_type;
-        if (currentType === type) return { ...p, selected };
-        return p;
-      })
+      prev.map((p) => (filteredSet.has(p) ? { ...p, selected: true } : p))
     );
   }
 
-  function showMore(type: string) {
-    setExpandedGroups((prev) => ({
-      ...prev,
-      [type]: (prev[type] || PAGES_PER_GROUP) + PAGES_PER_GROUP,
-    }));
+  function deselectFiltered() {
+    const filteredSet = new Set(filtered);
+    setPages((prev) =>
+      prev.map((p) => (filteredSet.has(p) ? { ...p, selected: false } : p))
+    );
   }
 
-  async function handleAuditAll() {
+  function selectOnlyType(type: string) {
+    setPages((prev) =>
+      prev.map((p) => ({
+        ...p,
+        selected: (p.override_type || p.suggested_type) === type,
+      }))
+    );
+  }
+
+  async function handleAddPages() {
     const selected = pages.filter((p) => p.selected);
     if (selected.length === 0) return;
 
-    // Batch insert (max 50 at a time to avoid timeout)
     const batchSize = 50;
     for (let i = 0; i < selected.length; i += batchSize) {
       const batch = selected.slice(i, i + batchSize);
@@ -180,24 +204,27 @@ export default function ScanPage() {
     router.push(`/sites/${siteId}`);
   }
 
+  // ── Loading state ──
   if (crawlStatus === "crawling" || loading) {
     return (
-      <div className="min-h-screen bg-background">
-        <nav className="flex items-center justify-between px-6 py-4 border-b border-border/50">
-          <a href="/" className="font-mono text-sm font-bold tracking-tight">
-            CRO<span className="text-muted-foreground">audit</span>
+      <div className="min-h-screen bg-background relative">
+        <div className="fixed inset-0 bg-dot-grid opacity-30 pointer-events-none" />
+        <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4
+          border-b border-white/6 bg-background/80 backdrop-blur-md">
+          <a href="/dashboard" className="font-mono text-sm font-bold tracking-tight">
+            CRO<span className="text-gradient-cro">audit</span>
           </a>
         </nav>
-        <div className="max-w-3xl mx-auto px-6 py-24 text-center space-y-6">
+        <div className="relative max-w-3xl mx-auto px-6 py-24 text-center space-y-6">
           <div className="flex items-center justify-center">
-            <div className="w-12 h-12 border-4 border-gray-200 border-t-black rounded-full animate-spin" />
+            <div className="w-10 h-10 rounded-full border-2 border-primary border-t-transparent animate-spin" />
           </div>
-          <h1 className="text-xl font-bold">Scanning site...</h1>
+          <h1 className="text-xl font-black tracking-tight">Scanning site...</h1>
           <p className="text-muted-foreground">
             Checking sitemap, robots.txt, and homepage links. This may take a moment for large sites.
           </p>
           <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-            <span className="inline-block w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
             Crawling in progress
           </div>
         </div>
@@ -205,153 +232,286 @@ export default function ScanPage() {
     );
   }
 
+  // ── Failed state ──
   if (crawlStatus === "failed") {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center space-y-4">
-          <p className="text-lg font-semibold text-red-500">
+          <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20
+            flex items-center justify-center mx-auto">
+            <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+            </svg>
+          </div>
+          <p className="text-sm font-semibold text-foreground/80">
             Scan failed. The site might be unreachable.
           </p>
           <a href={`/sites/${siteId}`}>
-            <Button variant="outline">Back to site</Button>
+            <Button variant="outline" className="rounded-xl border-white/12 hover:border-white/25">
+              Back to site
+            </Button>
           </a>
         </div>
       </div>
     );
   }
 
+  // ── Results ──
   return (
-    <div className="min-h-screen bg-background">
-      <nav className="flex items-center justify-between px-6 py-4 border-b border-border/50">
-        <a href="/" className="font-mono text-sm font-bold tracking-tight">
-          CRO<span className="text-muted-foreground">audit</span>
+    <div className="min-h-screen bg-background relative">
+      <div className="fixed inset-0 bg-dot-grid opacity-30 pointer-events-none" />
+
+      {/* ── Nav ── */}
+      <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4
+        border-b border-white/6 bg-background/80 backdrop-blur-md">
+        <a href="/dashboard" className="font-mono text-sm font-bold tracking-tight">
+          CRO<span className="text-gradient-cro">audit</span>
         </a>
         <a
           href={`/sites/${siteId}`}
-          className="text-sm text-muted-foreground hover:text-foreground"
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
         >
           Back to site
         </a>
       </nav>
 
-      <div className="max-w-4xl mx-auto px-6 py-12 space-y-6">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">
+      <div className="relative max-w-5xl mx-auto px-6 py-12 space-y-6">
+        {/* ── Header ── */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-tight">
               Found {pages.length} pages
             </h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              {selectedCount} selected for audit
+            <p className="text-sm text-muted-foreground">
+              {selectedCount} selected for import
               {pages.length >= 500 && (
-                <span className="ml-2 text-yellow-600">
-                  (capped at 500 — large site)
+                <span className="ml-2 text-amber-400">
+                  (capped at 500)
                 </span>
               )}
             </p>
           </div>
-          <Button onClick={handleAuditAll} disabled={selectedCount === 0}>
-            Add {selectedCount} pages
+          <Button
+            onClick={handleAddPages}
+            disabled={selectedCount === 0}
+            className="rounded-xl bg-primary text-primary-foreground
+              hover:bg-primary/90 font-semibold btn-glow shrink-0"
+          >
+            Add {selectedCount} pages →
           </Button>
         </div>
 
-        {/* Bulk actions */}
-        <div className="flex items-center gap-3 text-sm">
-          <Button variant="outline" size="sm" onClick={selectAll}>
-            Select all
-          </Button>
-          <Button variant="outline" size="sm" onClick={deselectAll}>
-            Deselect all
-          </Button>
-          <span className="text-muted-foreground">
-            {selectedCount} / {pages.length} selected
-          </span>
+        {/* ── Type summary cards ── */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {Object.entries(typeStats)
+            .sort(([, a], [, b]) => b.total - a.total)
+            .map(([type, stats]) => {
+              const isActive = typeFilter === type;
+              return (
+                <button
+                  key={type}
+                  onClick={() => setTypeFilter(isActive ? "all" : type)}
+                  className={`rounded-xl px-3 py-3 text-center space-y-1 transition-all duration-150
+                    border ${
+                      isActive
+                        ? "border-primary/40 bg-primary/10"
+                        : "border-white/8 bg-card hover:border-white/15 hover:bg-white/3"
+                    }`}
+                >
+                  <p className="font-mono text-lg font-black tabular-nums leading-none">
+                    {stats.total}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground capitalize truncate">
+                    {type.replace("_", " ")}
+                  </p>
+                  <p className="text-[9px] text-muted-foreground/40">
+                    {stats.selected} sel.
+                  </p>
+                </button>
+              );
+            })}
         </div>
 
-        {/* Grouped pages */}
-        {Object.entries(grouped)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([type, typePages]) => {
-            const visibleCount = expandedGroups[type] || PAGES_PER_GROUP;
-            const visiblePages = typePages.slice(0, visibleCount);
-            const hasMore = typePages.length > visibleCount;
-            const groupSelected = typePages.filter((tp) => tp.page.selected).length;
-            const allSelected = groupSelected === typePages.length;
+        {/* ── Filters + bulk actions ── */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex-1 relative">
+            <svg
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/40"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.5}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+              />
+            </svg>
+            <Input
+              placeholder="Search URLs..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setVisibleCount(VISIBLE_PER_PAGE);
+              }}
+              className="pl-10 h-10 rounded-xl bg-white/5 border-white/10 hover:border-white/20
+                focus:border-primary/60 placeholder:text-muted-foreground/30
+                transition-colors duration-150 font-mono text-sm"
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={selectFiltered}
+              className="rounded-lg border-white/12 hover:border-white/25 text-xs"
+            >
+              Select {typeFilter !== "all" || search ? "filtered" : "all"} ({filtered.length})
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={deselectFiltered}
+              className="rounded-lg border-white/12 hover:border-white/25 text-xs"
+            >
+              Deselect {typeFilter !== "all" || search ? "filtered" : "all"}
+            </Button>
+            {typeFilter !== "all" && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => selectOnlyType(typeFilter)}
+                className="rounded-lg border-primary/30 text-primary hover:bg-primary/10 text-xs"
+              >
+                Only {typeFilter.replace("_", " ")}
+              </Button>
+            )}
+          </div>
+        </div>
 
-            return (
-              <Card key={type}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <Checkbox
-                        checked={allSelected}
-                        onCheckedChange={(checked) =>
-                          toggleGroup(type, !!checked)
-                        }
-                      />
-                      <CardTitle className="text-base capitalize">
-                        {type.replace("_", " ")}
-                      </CardTitle>
-                      <Badge variant="secondary" className="text-xs">
-                        {typePages.length}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        ({groupSelected} selected)
-                      </span>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-1">
-                  {visiblePages.map(({ page, index }) => (
-                    <div
-                      key={page.url}
-                      className="flex items-center gap-3 py-2 border-b border-border/30 last:border-0"
-                    >
-                      <Checkbox
-                        checked={page.selected}
-                        onCheckedChange={() => togglePage(index)}
-                      />
-                      <span
-                        className="flex-1 font-mono text-sm truncate"
-                        title={page.url}
-                      >
-                        {page.url}
-                      </span>
-                      <span className="text-xs text-muted-foreground whitespace-nowrap">
-                        {Math.round(page.confidence * 100)}%
-                      </span>
-                      <Select
-                        value={page.override_type}
-                        onValueChange={(v) => {
-                          if (v) changeType(index, v);
-                        }}
-                      >
-                        <SelectTrigger className="w-28 h-8 text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {PAGE_TYPES.map((t) => (
-                            <SelectItem key={t} value={t} className="text-xs">
-                              {t.replace("_", " ")}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
+        {/* ── Active filter indicator ── */}
+        {(typeFilter !== "all" || search) && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>
+              Showing {filtered.length} of {pages.length} pages
+            </span>
+            {typeFilter !== "all" && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md
+                border border-primary/20 bg-primary/5 text-primary capitalize">
+                {typeFilter.replace("_", " ")}
+                <button
+                  onClick={() => setTypeFilter("all")}
+                  className="ml-0.5 hover:text-foreground"
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            {search && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md
+                border border-white/10 bg-white/5">
+                &quot;{search}&quot;
+                <button
+                  onClick={() => setSearch("")}
+                  className="ml-0.5 hover:text-foreground"
+                >
+                  ×
+                </button>
+              </span>
+            )}
+          </div>
+        )}
 
-                  {hasMore && (
-                    <button
-                      onClick={() => showMore(type)}
-                      className="w-full py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      Show more ({typePages.length - visibleCount} remaining)
-                    </button>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+        {/* ── Page list ── */}
+        <div className="rounded-2xl border border-white/8 bg-card overflow-hidden">
+          {/* Column headers */}
+          <div className="flex items-center gap-3 px-5 py-2.5 border-b border-white/6
+            text-[10px] font-bold uppercase tracking-widest text-muted-foreground/40">
+            <div className="w-5" />
+            <div className="flex-1">URL</div>
+            <div className="w-14 text-center">Conf.</div>
+            <div className="w-32 text-center">Type</div>
+          </div>
+
+          <div className="divide-y divide-white/4">
+            {visiblePages.map(({ page, index }) => (
+              <div
+                key={page.url}
+                className={`flex items-center gap-3 px-5 py-2.5 transition-colors
+                  ${page.selected ? "bg-white/[0.02]" : "opacity-50"}`}
+              >
+                <Checkbox
+                  checked={page.selected}
+                  onCheckedChange={() => togglePage(index)}
+                  className="shrink-0"
+                />
+                <span
+                  className="flex-1 font-mono text-xs text-foreground/70 truncate"
+                  title={page.url}
+                >
+                  {page.url}
+                </span>
+                <span className="w-14 text-center text-[10px] text-muted-foreground/50 tabular-nums">
+                  {Math.round(page.confidence * 100)}%
+                </span>
+                <Select
+                  value={page.override_type}
+                  onValueChange={(v) => {
+                    if (v) changeType(index, v);
+                  }}
+                >
+                  <SelectTrigger className="w-32 h-7 text-[11px] rounded-lg bg-white/5
+                    border-white/10 hover:border-white/20 transition-colors">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="rounded-xl border-white/10 bg-card">
+                    {PAGE_TYPES.map((t) => (
+                      <SelectItem key={t} value={t} className="text-xs capitalize">
+                        {t.replace("_", " ")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ))}
+          </div>
+
+          {/* Show more / summary */}
+          {hasMore && (
+            <button
+              onClick={() => setVisibleCount((v) => v + VISIBLE_PER_PAGE)}
+              className="w-full py-3 text-sm text-muted-foreground hover:text-foreground
+                hover:bg-white/3 transition-colors border-t border-white/6"
+            >
+              Show more ({filteredWithIndex.length - visibleCount} remaining)
+            </button>
+          )}
+
+          {filtered.length === 0 && (
+            <div className="py-12 text-center text-sm text-muted-foreground/50">
+              No pages match your filter
+            </div>
+          )}
+        </div>
+
+        {/* ── Bottom action bar ── */}
+        {selectedCount > 0 && (
+          <div className="sticky bottom-6 flex items-center justify-between gap-4
+            rounded-2xl border border-white/10 bg-card/95 backdrop-blur-md
+            px-6 py-4 shadow-[0_-4px_32px_-8px_oklch(0_0_0_/_50%)]">
+            <p className="text-sm text-muted-foreground">
+              <span className="font-mono font-bold text-foreground">{selectedCount}</span> pages selected
+            </p>
+            <Button
+              onClick={handleAddPages}
+              className="rounded-xl bg-primary text-primary-foreground
+                hover:bg-primary/90 font-semibold btn-glow"
+            >
+              Add {selectedCount} pages →
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -2,10 +2,18 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient as createServerClient } from '@/lib/supabase/server'
 import { runAudit } from '@/lib/audit-pipeline'
+import { rateLimit } from '@/lib/rate-limit'
 import type { PageType } from '@/lib/checklist'
 
 export async function POST(request: NextRequest) {
   try {
+    // Rate limiting: 10 per hour per IP
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+    const { allowed } = rateLimit(`audit:${ip}`, 10, 60 * 60 * 1000)
+    if (!allowed) {
+      return NextResponse.json({ error: 'Rate limit exceeded. Try again later.' }, { status: 429 })
+    }
+
     const body = await request.json()
     const { url, page_type = 'home', page_id, site_id } = body
 
@@ -45,28 +53,26 @@ export async function POST(request: NextRequest) {
       if (user) {
         userId = user.id
 
+        // Check plan for paid status
         const { data: profile } = await supabase
           .from('profiles')
-          .select('plan, subscription_status, audits_used_this_month, audits_limit')
+          .select('plan, subscription_status')
           .eq('id', userId)
           .single()
 
         if (profile) {
           isPaidUser = profile.plan !== 'free' && profile.subscription_status === 'active'
+        }
 
-          // Check audit limits
-          if (profile.audits_used_this_month >= profile.audits_limit) {
-            return NextResponse.json(
-              { error: 'Monthly audit limit reached. Please upgrade your plan.' },
-              { status: 429 }
-            )
-          }
+        // Atomic check-and-increment with lazy monthly reset
+        const { data: counter, error: counterError } = await supabase
+          .rpc('increment_audit_counter', { p_user_id: userId })
 
-          // Increment usage
-          await supabase
-            .from('profiles')
-            .update({ audits_used_this_month: profile.audits_used_this_month + 1 })
-            .eq('id', userId)
+        if (counterError || !counter?.[0]?.allowed) {
+          return NextResponse.json(
+            { error: 'Monthly audit limit reached. Please upgrade your plan.' },
+            { status: 429 }
+          )
         }
       }
     } catch {
@@ -181,7 +187,15 @@ export async function POST(request: NextRequest) {
 
 // For anonymous users — store results in a temporary table or just in-memory
 // For MVP, we create a special anonymous profile and use that
-const ANON_AUDIT_RESULTS = new Map<string, { status: string; result?: Record<string, unknown> }>()
+const ANON_AUDIT_RESULTS = new Map<string, { status: string; result?: Record<string, unknown>; createdAt: number }>()
+
+// Periodic cleanup — remove entries older than 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000
+  for (const [key, val] of ANON_AUDIT_RESULTS) {
+    if (val.createdAt < cutoff) ANON_AUDIT_RESULTS.delete(key)
+  }
+}, 5 * 60 * 1000)
 
 async function runAnonymousAudit(
   auditId: string,
@@ -190,7 +204,7 @@ async function runAnonymousAudit(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   _supabase: any
 ) {
-  ANON_AUDIT_RESULTS.set(auditId, { status: 'auditing' })
+  ANON_AUDIT_RESULTS.set(auditId, { status: 'auditing', createdAt: Date.now() })
 
   try {
     const result = await runAudit(url, pageType, false)
@@ -208,10 +222,11 @@ async function runAnonymousAudit(
         html_report: result.html_report,
         model_used_audit: result.model_used_audit,
       },
+      createdAt: Date.now(),
     })
   } catch (error) {
     console.error('Anonymous audit error:', error)
-    ANON_AUDIT_RESULTS.set(auditId, { status: 'failed' })
+    ANON_AUDIT_RESULTS.set(auditId, { status: 'failed', createdAt: Date.now() })
   }
 }
 

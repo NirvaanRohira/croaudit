@@ -101,6 +101,42 @@ create policy "Users can CRUD own crawls" on public.crawl_results for all using 
   site_id in (select id from public.sites where user_id = auth.uid())
 );
 
+-- Monthly usage reset tracking
+alter table public.profiles add column if not exists usage_reset_at timestamptz default now();
+
+-- Atomic audit counter with lazy monthly reset
+-- Checks limit, resets if new month, and increments in one transaction
+create or replace function public.increment_audit_counter(p_user_id uuid)
+returns table(allowed boolean, current_count integer, max_limit integer) as $$
+declare
+  v_used integer;
+  v_limit integer;
+begin
+  -- Lazy reset: if usage_reset_at is before current month, reset counter
+  update public.profiles
+  set audits_used_this_month = 0,
+      usage_reset_at = date_trunc('month', now())
+  where id = p_user_id
+    and usage_reset_at < date_trunc('month', now());
+
+  -- Atomic conditional increment: only succeeds if under limit
+  update public.profiles
+  set audits_used_this_month = audits_used_this_month + 1,
+      updated_at = now()
+  where id = p_user_id
+    and audits_used_this_month < audits_limit
+  returning audits_used_this_month, audits_limit into v_used, v_limit;
+
+  if v_used is not null then
+    return query select true, v_used, v_limit;
+  else
+    select p.audits_used_this_month, p.audits_limit into v_used, v_limit
+    from public.profiles p where p.id = p_user_id;
+    return query select false, coalesce(v_used, 0), coalesce(v_limit, 1);
+  end if;
+end;
+$$ language plpgsql security definer;
+
 -- Function to auto-create profile on signup
 create or replace function public.handle_new_user()
 returns trigger as $$

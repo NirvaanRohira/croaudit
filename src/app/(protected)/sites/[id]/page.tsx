@@ -5,8 +5,6 @@ import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -14,14 +12,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import type { Site, Page, Audit } from "@/lib/supabase/types";
 
 const PAGE_TYPES = [
@@ -35,15 +25,43 @@ const PAGE_TYPES = [
   "general",
 ];
 
+/* ── Score pill ───────────────────────────────────────────────────────── */
 function ScoreColor({ score }: { score: number | null }) {
-  if (score == null) return <span className="text-muted-foreground">--</span>;
-  const color =
+  if (score == null)
+    return <span className="font-mono text-muted-foreground/40">--</span>;
+  const [color, bg, border] =
     score >= 70
-      ? "text-emerald-500"
+      ? ["text-emerald-400", "bg-emerald-500/10", "border-emerald-500/20"]
       : score >= 40
-      ? "text-amber-500"
-      : "text-red-500";
-  return <span className={`font-mono font-bold ${color}`}>{score}</span>;
+      ? ["text-amber-400", "bg-amber-500/10", "border-amber-500/20"]
+      : ["text-red-400", "bg-red-500/10", "border-red-500/20"];
+
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-md border
+        font-mono text-sm font-black tabular-nums ${color} ${bg} ${border}`}
+    >
+      {score}
+    </span>
+  );
+}
+
+/* ── Status badge ─────────────────────────────────────────────────────── */
+function StatusBadge({ status }: { status?: string }) {
+  if (!status) return <span className="text-xs text-muted-foreground/40">Not audited</span>;
+
+  const styles =
+    status === "complete"
+      ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
+      : status === "failed"
+      ? "text-red-400 bg-red-500/10 border-red-500/20"
+      : "text-amber-400 bg-amber-500/10 border-amber-500/20";
+
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-md border text-xs font-bold capitalize ${styles}`}>
+      {status}
+    </span>
+  );
 }
 
 export default function SiteDetailPage() {
@@ -84,7 +102,6 @@ export default function SiteDetailPage() {
         .order("created_at", { ascending: false });
 
       if (pagesData) {
-        // Fetch latest audit for each page
         const pagesWithAudits = await Promise.all(
           pagesData.map(async (page) => {
             const { data: audit } = await supabase
@@ -163,9 +180,7 @@ export default function SiteDetailPage() {
 
     setAuditingAll(true);
 
-    // Start audits for all unaudited pages (first one navigates to results)
     const first = unaudited[0];
-    // Start the rest in background
     for (let i = 1; i < unaudited.length; i++) {
       const p = unaudited[i];
       fetch("/api/audit/run", {
@@ -180,7 +195,6 @@ export default function SiteDetailPage() {
       }).catch(() => {});
     }
 
-    // Navigate to the first audit
     try {
       const res = await fetch("/api/audit/run", {
         method: "POST",
@@ -221,158 +235,198 @@ export default function SiteDetailPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin h-6 w-6 border-2 border-foreground border-t-transparent rounded-full" />
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-6 h-6 rounded-full border-2 border-primary border-t-transparent animate-spin" />
       </div>
     );
   }
 
+  const unauditedCount = pages.filter(p => !p.latest_audit || p.latest_audit.status === "failed").length;
+
   return (
-    <div className="min-h-screen bg-background">
-      <nav className="flex items-center justify-between px-6 py-4 border-b border-border/50">
-        <a href="/" className="font-mono text-sm font-bold tracking-tight">
-          CRO<span className="text-muted-foreground">audit</span>
+    <div className="min-h-screen bg-background relative">
+      {/* ── Background ── */}
+      <div className="fixed inset-0 bg-dot-grid opacity-30 pointer-events-none" />
+
+      {/* ── Nav ── */}
+      <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4
+        border-b border-white/6 bg-background/80 backdrop-blur-md">
+        <a href="/dashboard" className="font-mono text-sm font-bold tracking-tight">
+          CRO<span className="text-gradient-cro">audit</span>
         </a>
         <div className="flex items-center gap-4">
           <a
             href="/dashboard"
-            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors duration-150"
           >
             Dashboard
           </a>
         </div>
       </nav>
 
-      <div className="max-w-5xl mx-auto px-6 py-12 space-y-8">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">{site?.name || site?.domain}</h1>
-            <p className="text-sm text-muted-foreground font-mono mt-1">
+      <div className="relative max-w-5xl mx-auto px-6 py-12 space-y-8">
+        {/* ── Header ── */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-tight">
+              {site?.name || site?.domain}
+            </h1>
+            <p className="text-sm text-muted-foreground/50 font-mono">
               {site?.domain}
             </p>
           </div>
-          <div className="flex gap-2">
-            {pages.length > 0 && (
-              <Button onClick={handleAuditAll} disabled={auditingAll}>
-                {auditingAll ? "Starting audits..." : `Audit all (${pages.filter(p => !p.latest_audit || p.latest_audit.status === "failed").length})`}
+          <div className="flex gap-2 shrink-0">
+            {pages.length > 0 && unauditedCount > 0 && (
+              <Button
+                onClick={handleAuditAll}
+                disabled={auditingAll}
+                className="rounded-xl bg-primary text-primary-foreground
+                  hover:bg-primary/90 font-semibold btn-glow"
+              >
+                {auditingAll ? "Starting..." : `Audit all (${unauditedCount})`}
               </Button>
             )}
-            <Button onClick={handleScanSite} variant="outline" disabled={scanning}>
-              {scanning ? "Scanning..." : "Scan entire site"}
+            <Button
+              onClick={handleScanSite}
+              variant="outline"
+              disabled={scanning}
+              className="rounded-xl border-white/12 hover:border-white/25
+                hover:bg-white/6 transition-all duration-150"
+            >
+              {scanning ? "Scanning..." : "Scan site"}
             </Button>
           </div>
         </div>
 
-        {/* Add page */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Add a page</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex gap-3">
-              <Input
-                placeholder={`https://${site?.domain}/product/example`}
-                value={newUrl}
-                onChange={(e) => setNewUrl(e.target.value)}
-                className="flex-1 font-mono text-sm"
-                onKeyDown={(e) => e.key === "Enter" && handleAddPage()}
-              />
-              <Select value={newType} onValueChange={(v) => { if (v) setNewType(v) }}>
-                <SelectTrigger className="w-36">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PAGE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t.replace("_", " ")}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Button onClick={handleAddPage}>Add</Button>
-            </div>
-          </CardContent>
-        </Card>
+        {/* ── Add page ── */}
+        <div className="rounded-2xl border border-white/8 bg-card p-6 space-y-4">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
+            Add a page
+          </h3>
+          <div className="flex gap-3">
+            <Input
+              placeholder={`https://${site?.domain}/product/example`}
+              value={newUrl}
+              onChange={(e) => setNewUrl(e.target.value)}
+              className="flex-1 font-mono text-sm h-11 rounded-xl bg-white/5 border-white/10
+                hover:border-white/20 focus:border-primary/60 placeholder:text-muted-foreground/30
+                transition-colors duration-150"
+              onKeyDown={(e) => e.key === "Enter" && handleAddPage()}
+            />
+            <Select value={newType} onValueChange={(v) => { if (v) setNewType(v) }}>
+              <SelectTrigger className="w-36 h-11 rounded-xl bg-white/5 border-white/10
+                hover:border-white/20 transition-colors duration-150">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="rounded-xl border-white/10 bg-card">
+                {PAGE_TYPES.map((t) => (
+                  <SelectItem key={t} value={t} className="capitalize">
+                    {t.replace("_", " ")}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              onClick={handleAddPage}
+              className="rounded-xl bg-primary text-primary-foreground
+                hover:bg-primary/90 font-semibold h-11 px-5"
+            >
+              Add →
+            </Button>
+          </div>
+        </div>
 
-        {/* Pages table */}
-        {pages.length === 0 ? (
-          <Card>
-            <CardContent className="py-12 text-center">
-              <p className="text-muted-foreground">
-                No pages yet. Add a URL above or scan the entire site.
-              </p>
-            </CardContent>
-          </Card>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>URL</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Score</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pages.map((page) => (
-                <TableRow key={page.id}>
-                  <TableCell className="font-mono text-sm max-w-xs truncate">
-                    {page.url}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="text-xs capitalize">
-                      {page.page_type.replace("_", " ")}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <ScoreColor score={page.latest_audit?.score ?? null} />
-                  </TableCell>
-                  <TableCell>
-                    {page.latest_audit ? (
-                      <Badge
-                        variant={
-                          page.latest_audit.status === "complete"
-                            ? "secondary"
-                            : "outline"
-                        }
-                        className="text-xs"
-                      >
-                        {page.latest_audit.status}
-                      </Badge>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        Not audited
+        {/* ── Pages list ── */}
+        <div className="space-y-3">
+          <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
+            Pages ({pages.length})
+          </h2>
+
+          {pages.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-card
+              py-20 text-center space-y-4">
+              <div className="w-12 h-12 rounded-full bg-white/5 border border-white/10
+                flex items-center justify-center mx-auto">
+                <svg className="w-5 h-5 text-muted-foreground/40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                </svg>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-foreground/60">No pages yet</p>
+                <p className="text-xs text-muted-foreground/40">
+                  Add a URL above or scan the entire site
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-white/8 bg-card overflow-hidden">
+              <div className="divide-y divide-white/6">
+                {pages.map((page) => (
+                  <div
+                    key={page.id}
+                    className="flex items-center justify-between px-6 py-4
+                      hover:bg-white/3 transition-colors group"
+                  >
+                    <div className="flex items-center gap-4 min-w-0 flex-1">
+                      {/* Page type badge */}
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md border
+                        border-white/10 bg-white/5 text-[10px] font-bold uppercase tracking-wide
+                        text-muted-foreground/60 shrink-0 w-20 justify-center capitalize">
+                        {page.page_type.replace("_", " ")}
                       </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-2">
-                      {page.latest_audit?.status === "complete" && (
-                        <a href={`/audit/${page.latest_audit.id}`}>
-                          <Button variant="ghost" size="sm">
-                            View
-                          </Button>
-                        </a>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={auditingPage === page.id}
-                        onClick={() =>
-                          handleRunAudit(page.id, page.url, page.page_type)
-                        }
-                      >
-                        {auditingPage === page.id ? "Starting..." : "Audit"}
-                      </Button>
+                      <div className="min-w-0">
+                        <p className="text-sm font-mono text-foreground/70 truncate">
+                          {page.url}
+                        </p>
+                      </div>
                     </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+
+                    <div className="flex items-center gap-5 shrink-0 ml-4">
+                      <div className="text-right">
+                        <p className="text-[10px] text-muted-foreground/40 uppercase tracking-wider mb-0.5">
+                          Score
+                        </p>
+                        <ScoreColor score={page.latest_audit?.score ?? null} />
+                      </div>
+                      <div className="text-right">
+                        <p className="text-[10px] text-muted-foreground/40 uppercase tracking-wider mb-0.5">
+                          Status
+                        </p>
+                        <StatusBadge status={page.latest_audit?.status} />
+                      </div>
+                      <div className="flex gap-2">
+                        {page.latest_audit?.status === "complete" && (
+                          <a href={`/audit/${page.latest_audit.id}`}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-muted-foreground hover:text-foreground
+                                hover:bg-white/6 rounded-lg text-xs"
+                            >
+                              View
+                            </Button>
+                          </a>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={auditingPage === page.id}
+                          onClick={() =>
+                            handleRunAudit(page.id, page.url, page.page_type)
+                          }
+                          className="rounded-lg border-white/12 hover:border-white/25
+                            hover:bg-white/6 text-xs"
+                        >
+                          {auditingPage === page.id ? "Starting..." : "Audit"}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
