@@ -263,17 +263,34 @@ export default function AuditReportPage() {
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
+    let timeout: NodeJS.Timeout;
+    const MAX_POLL_MS = 3 * 60 * 1000; // 3 minutes
+
     async function startPolling() {
       const done = await pollStatus();
       if (!done) {
         interval = setInterval(async () => {
           const finished = await pollStatus();
-          if (finished) clearInterval(interval);
+          if (finished) {
+            clearInterval(interval);
+            clearTimeout(timeout);
+          }
         }, 3000);
+
+        // Stop polling after 3 minutes and show friendly message
+        timeout = setTimeout(() => {
+          clearInterval(interval);
+          setError(
+            "Audit is taking longer than expected. It may still complete — check back later or try again."
+          );
+        }, MAX_POLL_MS);
       }
     }
     startPolling();
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
   }, [pollStatus]);
 
   useEffect(() => {

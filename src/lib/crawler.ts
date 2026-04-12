@@ -8,6 +8,8 @@ export interface DiscoveredPage {
 
 // Maximum pages to return from a crawl (large sitemaps can have 100K+ URLs)
 const MAX_PAGES = 500
+// Collect more raw URLs before sampling down for type diversity
+const MAX_RAW_URLS = 5000
 
 /**
  * Classify a URL into a page type by pattern matching.
@@ -41,6 +43,39 @@ export function classifyUrl(url: string): { type: string; confidence: number } {
   // Landing/promo
   if (path.includes('/landing') || path.includes('/promo') || path.includes('/offer'))
     return { type: 'landing', confidence: 0.80 }
+
+  // E-commerce category heuristics — common browse/department path segments
+  const categorySegments = new Set([
+    'men', 'women', 'mens', 'womens',
+    'kids', 'boys', 'girls', 'baby', 'toddler', 'youth',
+    'clothing', 'apparel', 'shoes', 'footwear', 'sneakers',
+    'accessories', 'bags', 'jewelry', 'jewellery', 'watches',
+    'sale', 'clearance', 'new', 'new-arrivals', 'new-in',
+    'tops', 'bottoms', 'dresses', 'jackets', 'coats', 'pants',
+    'shorts', 'shirts', 'hoodies', 'sweaters', 'swimwear',
+    'activewear', 'sportswear', 'underwear', 'socks', 'outerwear',
+    'furniture', 'decor', 'kitchen', 'bath', 'bedroom',
+    'electronics', 'phones', 'laptops', 'tablets',
+    'beauty', 'skincare', 'makeup', 'fragrance', 'haircare',
+    'gifts', 'best-sellers', 'trending', 'featured',
+    'brands', 'shop', 'shop-all', 'all', 'collections',
+  ])
+
+  const segments = path.split('/').filter(Boolean)
+  if (segments.length >= 1 && segments.length <= 4) {
+    const firstSegment = segments[0].toLowerCase()
+    if (categorySegments.has(firstSegment)) {
+      const conf = segments.length === 1 ? 0.85 : 0.80
+      return { type: 'category', confidence: conf }
+    }
+  }
+
+  // Paths with 2-3 clean segments (no long IDs or hashes) look like browse paths
+  // e.g., /other/point-of-sale/, /men/apparel/tanks-singlets/
+  if (segments.length >= 2 && segments.length <= 3
+      && !segments.some(s => /\d{5,}|[a-f0-9]{8,}/.test(s))) {
+    return { type: 'category', confidence: 0.65 }
+  }
 
   return { type: 'general', confidence: 0.50 }
 }
@@ -94,37 +129,45 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   const resolvedDomain = new URL(baseUrl).hostname
   console.log(`[Crawler] Resolved base URL: ${baseUrl} (domain: ${resolvedDomain})`)
 
-  const discovered = new Map<string, DiscoveredPage>()
+  // Phase 1: Collect raw URLs (up to MAX_RAW_URLS) without classifying yet
+  const rawUrls = new Set<string>()
+
+  function isSameDomain(urlHost: string): boolean {
+    return urlHost === resolvedDomain || urlHost === domain || urlHost === `www.${domain}`
+  }
+
+  function addFilteredUrl(url: string) {
+    if (rawUrls.size >= MAX_RAW_URLS) return
+    try {
+      const urlHost = new URL(url).hostname
+      if (isSameDomain(urlHost)) {
+        const lower = url.toLowerCase()
+        // Skip assets, API endpoints, etc.
+        if (lower.match(/\.(css|js|png|jpg|jpeg|gif|svg|webp|ico|woff|woff2|ttf|eot|pdf|zip|xml|json)$/)) return
+        if (lower.includes('/api/') || lower.includes('/wp-json/') || lower.includes('/feed')) return
+        if (lower.includes('/cdn-cgi/') || lower.includes('/_next/')) return
+        rawUrls.add(url)
+      }
+    } catch {
+      // Invalid URL, skip
+    }
+  }
 
   // Strategy 1: Try sitemap.xml
   try {
     console.log(`[Crawler] Trying sitemap: ${baseUrl}/sitemap.xml`)
-    const sitemapUrls = await fetchSitemap(`${baseUrl}/sitemap.xml`, MAX_PAGES)
+    const sitemapUrls = await fetchSitemap(`${baseUrl}/sitemap.xml`, MAX_RAW_URLS)
     console.log(`[Crawler] Sitemap returned ${sitemapUrls.length} URLs`)
-
-    // Filter to only same-domain URLs (skip international/localized versions)
     for (const url of sitemapUrls) {
-      if (discovered.size >= MAX_PAGES) break
-      try {
-        const urlHost = new URL(url).hostname
-        // Only include URLs from the same domain (skip es-US, fr, etc. subpaths if different host)
-        if (urlHost === resolvedDomain || urlHost === domain || urlHost === `www.${domain}`) {
-          if (!discovered.has(url)) {
-            const { type, confidence } = classifyUrl(url)
-            discovered.set(url, { url, suggested_type: type, confidence })
-          }
-        }
-      } catch {
-        // Invalid URL, skip
-      }
+      addFilteredUrl(url)
     }
-    console.log(`[Crawler] After filtering: ${discovered.size} pages`)
+    console.log(`[Crawler] After sitemap filtering: ${rawUrls.size} URLs`)
   } catch (err) {
     console.log(`[Crawler] Sitemap failed:`, err)
   }
 
   // Strategy 2: Check robots.txt for Sitemap directives
-  if (discovered.size === 0) {
+  if (rawUrls.size === 0) {
     try {
       console.log(`[Crawler] Trying robots.txt: ${baseUrl}/robots.txt`)
       const robotsRes = await fetch(`${baseUrl}/robots.txt`, {
@@ -137,16 +180,12 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
         console.log(`[Crawler] Found ${sitemapMatches?.length || 0} sitemap directives in robots.txt`)
         if (sitemapMatches) {
           for (const match of sitemapMatches) {
-            if (discovered.size >= MAX_PAGES) break
+            if (rawUrls.size >= MAX_RAW_URLS) break
             const sitemapUrl = match.replace(/Sitemap:\s*/i, '').trim()
             try {
-              const urls = await fetchSitemap(sitemapUrl, MAX_PAGES - discovered.size)
+              const urls = await fetchSitemap(sitemapUrl, MAX_RAW_URLS - rawUrls.size)
               for (const url of urls) {
-                if (discovered.size >= MAX_PAGES) break
-                if (!discovered.has(url)) {
-                  const { type, confidence } = classifyUrl(url)
-                  discovered.set(url, { url, suggested_type: type, confidence })
-                }
+                addFilteredUrl(url)
               }
             } catch {
               // Skip failed sitemaps
@@ -160,7 +199,7 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   }
 
   // Strategy 3: Crawl homepage for internal links
-  if (discovered.size === 0) {
+  if (rawUrls.size === 0) {
     try {
       console.log(`[Crawler] Trying homepage link extraction: ${baseUrl}`)
       const homeRes = await fetch(baseUrl, {
@@ -173,11 +212,7 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
         const links = extractInternalLinks(html, resolvedDomain)
         console.log(`[Crawler] Found ${links.length} internal links on homepage`)
         for (const url of links) {
-          if (discovered.size >= MAX_PAGES) break
-          if (!discovered.has(url)) {
-            const { type, confidence } = classifyUrl(url)
-            discovered.set(url, { url, suggested_type: type, confidence })
-          }
+          addFilteredUrl(url)
         }
       }
     } catch {
@@ -186,28 +221,77 @@ export async function crawlDomain(domain: string): Promise<DiscoveredPage[]> {
   }
 
   // Always include the homepage
-  const homeUrls = [baseUrl, `${baseUrl}/`]
-  const hasHome = homeUrls.some(u => discovered.has(u))
-  if (!hasHome) {
-    discovered.set(baseUrl, {
-      url: baseUrl,
-      suggested_type: 'home',
-      confidence: 0.99,
-    })
+  if (!rawUrls.has(baseUrl) && !rawUrls.has(`${baseUrl}/`)) {
+    rawUrls.add(baseUrl)
   }
 
-  // Filter out non-page URLs
-  const results = Array.from(discovered.values()).filter((page) => {
-    const url = page.url.toLowerCase()
-    // Skip assets, API endpoints, etc.
-    if (url.match(/\.(css|js|png|jpg|jpeg|gif|svg|webp|ico|woff|woff2|ttf|eot|pdf|zip|xml|json)$/)) return false
-    if (url.includes('/api/') || url.includes('/wp-json/') || url.includes('/feed')) return false
-    if (url.includes('/cdn-cgi/') || url.includes('/_next/')) return false
-    return true
-  })
+  console.log(`[Crawler] Total raw URLs collected: ${rawUrls.size}`)
 
-  console.log(`[Crawler] Final result: ${results.length} pages`)
+  // Phase 2: Classify all collected URLs
+  const allPages: DiscoveredPage[] = []
+  for (const url of rawUrls) {
+    const { type, confidence } = classifyUrl(url)
+    allPages.push({ url, suggested_type: type, confidence })
+  }
+
+  // Phase 3: Diverse sampling — ensure all page types are represented
+  const results = diverseSample(allPages, MAX_PAGES)
+
+  console.log(`[Crawler] Final result: ${results.length} pages (sampled from ${allPages.length})`)
   return results
+}
+
+/**
+ * Round-robin sample across page types so no single type dominates.
+ * Guarantees at least MIN_PER_TYPE of each type before filling remaining quota.
+ */
+function diverseSample(allPages: DiscoveredPage[], maxPages: number): DiscoveredPage[] {
+  if (allPages.length <= maxPages) return allPages
+
+  // Group by type
+  const byType = new Map<string, DiscoveredPage[]>()
+  for (const page of allPages) {
+    const arr = byType.get(page.suggested_type) || []
+    arr.push(page)
+    byType.set(page.suggested_type, arr)
+  }
+
+  const result: DiscoveredPage[] = []
+  const types = [...byType.keys()]
+  const MIN_PER_TYPE = 10
+
+  // First pass: guarantee minimum representation per type
+  for (const type of types) {
+    const pages = byType.get(type)!
+    const take = Math.min(MIN_PER_TYPE, pages.length)
+    result.push(...pages.slice(0, take))
+  }
+
+  if (result.length >= maxPages) return result.slice(0, maxPages)
+
+  // Second pass: round-robin fill remaining quota
+  const usedPerType = new Map(types.map(t => [t, Math.min(MIN_PER_TYPE, byType.get(t)!.length)]))
+  let added = 0
+  const remaining = maxPages - result.length
+  let typeIdx = 0
+  let staleRounds = 0
+
+  while (added < remaining && staleRounds < types.length) {
+    const type = types[typeIdx % types.length]
+    const pages = byType.get(type)!
+    const used = usedPerType.get(type)!
+    if (used < pages.length) {
+      result.push(pages[used])
+      usedPerType.set(type, used + 1)
+      added++
+      staleRounds = 0
+    } else {
+      staleRounds++
+    }
+    typeIdx++
+  }
+
+  return result
 }
 
 async function fetchSitemap(url: string, maxUrls: number): Promise<string[]> {

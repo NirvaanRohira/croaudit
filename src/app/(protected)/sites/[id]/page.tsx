@@ -243,6 +243,31 @@ export default function SiteDetailPage() {
 
   const unauditedCount = pages.filter(p => !p.latest_audit || p.latest_audit.status === "failed").length;
 
+  // Aggregate score stats
+  const completedPages = pages.filter(p => p.latest_audit?.status === "complete");
+  const avgScore = completedPages.length > 0
+    ? Math.round(completedPages.reduce((sum, p) => sum + (p.latest_audit?.score || 0), 0) / completedPages.length)
+    : null;
+
+  // Page type breakdown
+  const typeBreakdown: { type: string; count: number; avgScore: number }[] = [];
+  if (completedPages.length > 0) {
+    const grouped = new Map<string, number[]>();
+    for (const page of completedPages) {
+      const scores = grouped.get(page.page_type) || [];
+      scores.push(page.latest_audit?.score || 0);
+      grouped.set(page.page_type, scores);
+    }
+    for (const [type, scores] of grouped) {
+      typeBreakdown.push({
+        type,
+        count: scores.length,
+        avgScore: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
+      });
+    }
+    typeBreakdown.sort((a, b) => b.count - a.count);
+  }
+
   return (
     <div className="min-h-screen bg-background relative">
       {/* ── Background ── */}
@@ -297,6 +322,84 @@ export default function SiteDetailPage() {
             </Button>
           </div>
         </div>
+
+        {/* ── Score overview (only when audits exist) ── */}
+        {avgScore !== null && (
+          <div className="rounded-2xl border border-white/8 bg-card p-6 space-y-5">
+            <div className="flex flex-col sm:flex-row items-center gap-6">
+              {/* Big score ring */}
+              <div className="relative w-24 h-24 shrink-0">
+                <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+                  <circle cx="50" cy="50" r="42" fill="none" stroke="currentColor"
+                    className="text-white/8" strokeWidth="8" />
+                  <circle cx="50" cy="50" r="42" fill="none"
+                    strokeWidth="8" strokeLinecap="round"
+                    strokeDasharray={`${(avgScore / 100) * 264} 264`}
+                    className={`score-ring-draw ${
+                      avgScore >= 70 ? "text-emerald-400" : avgScore >= 40 ? "text-amber-400" : "text-red-400"
+                    }`}
+                    stroke="currentColor" />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className={`font-mono text-2xl font-black tabular-nums ${
+                    avgScore >= 70 ? "text-emerald-400" : avgScore >= 40 ? "text-amber-400" : "text-red-400"
+                  }`}>
+                    {avgScore}
+                  </span>
+                </div>
+              </div>
+
+              {/* Stats */}
+              <div className="flex-1 grid grid-cols-3 gap-4 text-center sm:text-left">
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-widest">
+                    Total pages
+                  </p>
+                  <p className="font-mono text-xl font-black tabular-nums">{pages.length}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-widest">
+                    Audited
+                  </p>
+                  <p className="font-mono text-xl font-black tabular-nums">{completedPages.length}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] font-medium text-muted-foreground/50 uppercase tracking-widest">
+                    Avg score
+                  </p>
+                  <p className={`font-mono text-xl font-black tabular-nums ${
+                    avgScore >= 70 ? "text-emerald-400" : avgScore >= 40 ? "text-amber-400" : "text-red-400"
+                  }`}>
+                    {avgScore}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Type breakdown */}
+            {typeBreakdown.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/50">
+                  By page type
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                  {typeBreakdown.map(({ type, count, avgScore: typeAvg }) => (
+                    <div key={type} className="rounded-xl border border-white/8 bg-white/3 px-3 py-2.5
+                      flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold capitalize truncate">
+                          {type.replace("_", " ")}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground/40">{count} page{count !== 1 ? "s" : ""}</p>
+                      </div>
+                      <ScoreColor score={typeAvg} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ── Add page ── */}
         <div className="rounded-2xl border border-white/8 bg-card p-6 space-y-4">

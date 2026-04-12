@@ -164,6 +164,7 @@ async function callAnthropicAudit(prompt: string): Promise<{ results: AuditResul
     body: JSON.stringify({
       model,
       max_tokens: 8192,
+      temperature: 0,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -193,6 +194,7 @@ async function callOpenRouterAudit(prompt: string): Promise<{ results: AuditResu
     body: JSON.stringify({
       model,
       max_tokens: 8192,
+      temperature: 0,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -231,6 +233,7 @@ async function runOptimizeLLM(
       body: JSON.stringify({
         model,
         max_tokens: 8192,
+        temperature: 0,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
@@ -258,6 +261,7 @@ async function runOptimizeLLM(
       body: JSON.stringify({
         model,
         max_tokens: 8192,
+        temperature: 0,
         messages: [{ role: 'user', content: prompt }],
       }),
     })
@@ -277,12 +281,12 @@ async function runOptimizeLLM(
 // ─── JSON Parsing Helpers ───────────────────────────────────────────────────
 
 function parseAuditJSON(text: string): AuditResultItem[] {
+  // Strategy 1: Extract JSON array from markdown code blocks or raw text
   try {
-    // Try to extract JSON from markdown code blocks or raw text
     const jsonMatch = text.match(/\[[\s\S]*\]/)
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0])
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed.map((item: Record<string, unknown>) => ({
           item: String(item.item || ''),
           section: String(item.section || ''),
@@ -293,8 +297,37 @@ function parseAuditJSON(text: string): AuditResultItem[] {
       }
     }
   } catch (error) {
-    console.error('Failed to parse audit LLM response:', error)
+    console.error('Strategy 1 (full array) failed:', error)
   }
+
+  // Strategy 2: Fallback — find individual JSON objects and collect them
+  try {
+    const objectPattern = /\{[^{}]*"item"\s*:\s*"[^"]*"[^{}]*"status"\s*:\s*"[^"]*"[^{}]*\}/g
+    const matches = text.match(objectPattern)
+    if (matches && matches.length > 0) {
+      console.log(`[parseAuditJSON] Fallback: found ${matches.length} individual objects`)
+      const results: AuditResultItem[] = []
+      for (const match of matches) {
+        try {
+          const item = JSON.parse(match) as Record<string, unknown>
+          results.push({
+            item: String(item.item || ''),
+            section: String(item.section || ''),
+            status: normalizeStatus(String(item.status || '')),
+            explanation: String(item.explanation || ''),
+            impact: Number(item.impact || 1),
+          })
+        } catch {
+          // Skip malformed individual objects
+        }
+      }
+      if (results.length > 0) return results
+    }
+  } catch (error) {
+    console.error('Strategy 2 (individual objects) failed:', error)
+  }
+
+  console.error('All parsing strategies failed for audit LLM response')
   return []
 }
 
@@ -369,6 +402,11 @@ export async function runAudit(
   const { results: auditResults, model: auditModel } = await runAuditLLM(
     markdown, pagespeed, checklist, pageType, pageUrl, isPaidUser
   )
+
+  // Guard: If LLM response parsing yielded zero items, fail the audit
+  if (auditResults.length === 0) {
+    throw new Error('LLM response parsing failed — no audit items extracted. The model may have returned an unexpected format.')
+  }
 
   // Step 5: LLM Pass 2 — Optimization (paid users only)
   let suggestions: OptimizeSuggestion[] | null = null

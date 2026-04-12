@@ -167,8 +167,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to create audit record' }, { status: 500 })
     }
 
+    // Resolve the site ID for avg_score updates
+    const resolvedSiteId = site_id || (effectivePageId ? await (async () => {
+      const { data: pg } = await supabase.from('pages').select('site_id').eq('id', effectivePageId).single()
+      return pg?.site_id || null
+    })() : null)
+
     // Run the audit pipeline in the background
-    runAuditInBackground(audit.id, url, pageType, isPaidUser, supabase)
+    runAuditInBackground(audit.id, url, pageType, isPaidUser, supabase, resolvedSiteId)
 
     return NextResponse.json({
       audit_id: audit.id,
@@ -207,7 +213,13 @@ async function runAnonymousAudit(
   ANON_AUDIT_RESULTS.set(auditId, { status: 'auditing', createdAt: Date.now() })
 
   try {
-    const result = await runAudit(url, pageType, false)
+    const PIPELINE_TIMEOUT_MS = 5 * 60 * 1000
+    const result = await Promise.race([
+      runAudit(url, pageType, false),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Audit pipeline timeout (5 minutes)')), PIPELINE_TIMEOUT_MS)
+      ),
+    ])
     ANON_AUDIT_RESULTS.set(auditId, {
       status: 'complete',
       result: {
@@ -239,7 +251,8 @@ async function runAuditInBackground(
   pageType: PageType,
   isPaidUser: boolean,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  supabase: any
+  supabase: any,
+  siteId: string | null = null
 ) {
   try {
     // Update status to auditing
@@ -248,8 +261,14 @@ async function runAuditInBackground(
       .update({ status: 'auditing' })
       .eq('id', auditId)
 
-    // Run the pipeline with correct paid status
-    const result = await runAudit(url, pageType, isPaidUser)
+    // 5-minute timeout on the pipeline
+    const PIPELINE_TIMEOUT_MS = 5 * 60 * 1000
+    const result = await Promise.race([
+      runAudit(url, pageType, isPaidUser),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Audit pipeline timeout (5 minutes)')), PIPELINE_TIMEOUT_MS)
+      ),
+    ])
 
     // Update audit with results
     await supabase
@@ -274,6 +293,39 @@ async function runAuditInBackground(
         completed_at: new Date().toISOString(),
       })
       .eq('id', auditId)
+
+    // Recalculate site avg_score
+    if (siteId) {
+      try {
+        const { data: sitePages } = await supabase
+          .from('pages')
+          .select('id')
+          .eq('site_id', siteId)
+          .eq('is_active', true)
+
+        if (sitePages && sitePages.length > 0) {
+          const pageIds = sitePages.map((p: { id: string }) => p.id)
+          const { data: audits } = await supabase
+            .from('audits')
+            .select('page_id, score')
+            .in('page_id', pageIds)
+            .eq('status', 'complete')
+            .order('created_at', { ascending: false })
+
+          if (audits && audits.length > 0) {
+            const latestByPage = new Map<string, number>()
+            for (const a of audits) {
+              if (!latestByPage.has(a.page_id)) latestByPage.set(a.page_id, a.score)
+            }
+            const scores = [...latestByPage.values()]
+            const avg = Math.round(scores.reduce((a: number, b: number) => a + b, 0) / scores.length)
+            await supabase.from('sites').update({ avg_score: avg }).eq('id', siteId)
+          }
+        }
+      } catch (err) {
+        console.error('Failed to update site avg_score:', err)
+      }
+    }
   } catch (error) {
     console.error('Background audit error:', error)
     await supabase
